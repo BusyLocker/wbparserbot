@@ -1,0 +1,193 @@
+from telegram import ReplyKeyboardMarkup, KeyboardButton, Update, ReplyKeyboardRemove, InlineKeyboardButton, \
+    InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, \
+    PreCheckoutQueryHandler, CallbackContext
+from time import *
+import logging
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
+import json
+import re
+import requests
+from datetime import datetime, timedelta
+import schedule
+import threading
+import asyncio
+from typing import Optional
+import httpx
+import random
+
+# ─────────────────────────────────────────────────────────────
+# Supabase — куки берутся отсюда автоматически
+# ─────────────────────────────────────────────────────────────
+load_dotenv()
+url: str = os.environ.get("SUPABASE_URL")
+key: str = os.environ.get("SUPABASE_KEY")
+# ─────────────────────────────────────────────────────────────
+
+BASE_URL = "https://www.wildberries.ru/__internal/u-card/cards/v4/detail"
+
+PARAMS_BASE = {
+    "appType": "1",
+    "curr": "rub",
+    "dest": "1259570991",
+    "spp": "30",
+    "hide_vflags": "4294967296",
+    "hide_dtype": "15",
+    "lang": "ru",
+    "ab_testing": "false",
+}
+
+SEMAPHORE = asyncio.Semaphore(3)
+
+# Кэш куков в памяти — не дёргаем Supabase на каждый запрос
+_cookies_cache: dict = {}
+_headers_cache: dict = {}
+
+
+def load_cookies_from_supabase() -> tuple[dict, dict]:
+    sb = create_client(url, key)
+    result = sb.table("wb_cookies").select("cookies, headers").eq("id", 1).single().execute()
+    cookies = result.data.get("cookies", {})
+    headers = result.data.get("headers", {})
+    return cookies, headers
+
+
+def get_cookies() -> tuple[dict, dict]:
+    global _cookies_cache, _headers_cache
+    if not _cookies_cache:
+        print("🔄 Загружаю куки из Supabase...")
+        _cookies_cache, _headers_cache = load_cookies_from_supabase()
+    return _cookies_cache, _headers_cache
+
+
+def invalidate_cookies_cache():
+    global _cookies_cache, _headers_cache
+    _cookies_cache = {}
+    _headers_cache = {}
+
+
+def _extract_nm_id(url) -> Optional[int]:
+    match = re.search(r"/catalog/(\d+)/", url)
+    return int(match.group(1)) if match else None
+
+
+async def _fetch(client: httpx.AsyncClient, nm_id: int) -> dict:
+    async with SEMAPHORE:
+        cookies, extra_headers = get_cookies()
+
+        params = {**PARAMS_BASE, "nm": str(nm_id)}
+        headers = {
+            "accept": "*/*",
+            "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+            **extra_headers,  # deviceid, x-spa-version и др. из Supabase
+        }
+
+        for attempt in range(3):
+            try:
+                await asyncio.sleep(random.uniform(1.5, 3.0))
+                resp = await client.get(
+                    BASE_URL, params=params, headers=headers,
+                    cookies=cookies, timeout=15,
+                )
+
+                if resp.status_code == 429:
+                    wait = 15 * (attempt + 1)
+                    print(f"⏳ [{nm_id}] Лимит запросов, жду {wait} сек...")
+                    await asyncio.sleep(wait)
+                    continue
+
+                if resp.status_code in (403, 498):
+                    print(f"🔄 [{nm_id}] Токен невалиден, жду обновления куков...")
+                    invalidate_cookies_cache()
+                    await asyncio.sleep(5 * (attempt + 1))  # 5, 10, 15 сек между попытками
+                    cookies, extra_headers = get_cookies()
+                    continue
+
+                resp.raise_for_status()
+                return resp.json()
+
+            except Exception as e:
+                print(f"⚠️ [{nm_id}] Попытка {attempt + 1}/3 не удалась: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2)
+
+        print(f"❌ [{nm_id}] Все попытки исчерпаны, пропускаю")
+        return {}
+
+
+def _print_result(data, nm_id: int, url: str):
+    products = data.get("products", [])
+    if not products:
+        print("❌ Товар не найден")
+        return
+
+    p = products[0]
+    sizes = p.get("sizes", [])
+
+    variants = []
+    if len(sizes) > 1:
+        for size in sizes:
+            pd_ = size.get("price", {})
+            stocks = size.get("stocks", [])
+            in_stock = any(s.get("qty", 0) > 0 for s in stocks)
+            if in_stock:
+                variants.append((size.get("name") or "").strip())
+
+        if variants:
+            pd_ = sizes[-1].get("price", {})
+            total = pd_.get("product", 0) // 100
+            return total, variants
+        else:
+            return "Товара нет в наличии"
+    else:
+        size = sizes[0]
+        pd_ = size.get("price", {})
+        stocks = size.get("stocks", [])
+        in_stock = any(s.get("qty", 0) > 0 for s in stocks)
+        if in_stock:
+            total = pd_.get("product", 0) // 100
+            return total
+        else:
+            return "Товара нет в наличии"
+
+
+async def _run(urls, name_list, output_dict):
+    async with httpx.AsyncClient() as client:
+        tasks, valid = [], []
+        now = -1
+        all = []
+        for url, name in zip(urls, name_list):
+            now += 1
+            nm_id = _extract_nm_id(url)
+            if not nm_id:
+                print(f"❌ Не удалось распознать: {url}")
+                all.append(now)
+                continue
+            valid.append((url, nm_id))
+            tasks.append(_fetch(client, nm_id))
+
+        for a in all:
+            del name_list[a]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for (url, nm_id), result, name in zip(valid, results, name_list):
+            if isinstance(result, Exception):
+                print(f"\n🔗 {url}")
+                print(f"❌ Ошибка: {result}")
+            else:
+                output = _print_result(result, nm_id, url)
+                output_dict[name] = output
+        return output_dict
+
+
+def get_prices(url_list, name_list):
+    output_dict = {}
+    asyncio.run(_run(url_list, name_list, output_dict))
+    return output_dict
