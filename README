@@ -1,0 +1,32 @@
+# WB Price Tracker Bot
+
+My first pet-project — a Telegram bot for monitoring prices on Wildberries marketplace.
+
+## Stack
+
+- Python 3.10+
+- python-telegram-bot 13.15
+- httpx (async HTTP requests)
+- Supabase (PostgreSQL database)
+- Wildberries internal API
+
+## Files
+
+- `bot.py` — entry point, starts the bot and the hourly price-check scheduler
+- `logic.py` — parser logic, fetches prices from Wildberries API
+- `requirements.txt` — dependencies
+
+## How it works
+
+1. User adds a Wildberries product link via the bot
+2. Every hour the scheduler checks which users have notifications set for that hour
+3. For those users, the bot fetches current prices from Wildberries
+4. Results are sent to the user in Telegram
+
+## Language
+
+Bot interface: Russian
+
+## License
+
+All rights reserved. This project is for personal use only and is not intended for public deployment or redistribution.
