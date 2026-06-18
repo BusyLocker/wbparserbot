@@ -15,13 +15,27 @@ import schedule
 import threading
 
 
+
 load_dotenv()
 YOUR_ADMIN_ID: int = int(os.environ.get("YOUR_ADMIN_ID"))
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
 Token: str = os.environ.get("Token")
 Provider_Token: str = os.environ.get("Provider_Token")
+Log_Level: str = os.environ.get(("Log_Level"))
 supabase: Client = create_client(url, key)
+
+logging.basicConfig(
+    level=Log_Level,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
 
 ExpTimeOfDeliv = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]
 
@@ -45,7 +59,7 @@ def run_scheduler():
         current_hour = datetime.now(pytz.timezone('Europe/Moscow')).hour
         target_hour = current_hour + 1  # так как у тебя часы 1-24
 
-        print(f"[{datetime.now()}] Проверка для часа: {target_hour}")
+        logger.info(f"[{datetime.now()}] Проверка для часа: {target_hour}")
 
         # Получаем ВСЕХ пользователей
         users = supabase.table('items') \
@@ -53,7 +67,7 @@ def run_scheduler():
             .execute()
 
         if not users.data:
-            print("Нет пользователей")
+            logger.info("Нет пользователей")
             sleep(60)
             continue
 
@@ -63,9 +77,9 @@ def run_scheduler():
             delivery_hours = user.get('timeofdelivery')
             if delivery_hours and target_hour in delivery_hours:
                 users_to_check.append(user)
-                print(f"✅ Пользователь {user['id']} - часы: {delivery_hours}")
+                logger.debug(f"✅ Пользователь {user['id']} - часы: {delivery_hours}")
 
-        print(f"Найдено: {len(users_to_check)} пользователей")
+        logger.info(f"Найдено: {len(users_to_check)} пользователей")
 
         # Запускаем проверку
         for user in users_to_check:
@@ -82,7 +96,6 @@ def check_and_notify(user_id):
     """
     # Проверяем тариф
     if is_tariff_expired(user_id):
-        print(f"Тариф пользователя {user_id} истёк, пропускаем")
         return
     urls = []
     names = []
@@ -93,7 +106,6 @@ def check_and_notify(user_id):
         .execute()
 
     if not result.data:
-        print(f"У пользователя {user_id} нет товаров")
         return
 
     for item in result.data:
@@ -115,9 +127,9 @@ def check_and_notify(user_id):
     # Отправляем уведомление
     try:
         bot.send_message(chat_id=user_id, text=message00)
-        print(f"Уведомление отправлено пользователю {user_id}")
+        logger.debug(f"Уведомление отправлено пользователю {user_id}")
     except Exception as e:
-        print(f"Ошибка отправки {user_id}: {e}")
+        logger.error(f"Ошибка отправки {user_id}: {e}")
 
 
 def del_list(update: Update,context: CallbackContext):
@@ -244,10 +256,10 @@ def is_tariff_expired(idi):
 def test_connection():
     try:
         result = supabase.table('users').select('*').limit(1).execute()
-        print("✅ Supabase подключён!")
+        logger.info("✅ Supabase подключён!")
         return True
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        logger.critical(f"❌ Ошибка: {e}")
         return False
 
 test_connection()
@@ -498,7 +510,6 @@ def handle_choice(update: Update, context: CallbackContext):
         }.get(tariff, 1)
 
         collected = len(context.user_data["collected_hours"])
-        print(hours_needed)
 
         # Если ещё не все часы собраны
         if collected < hours_needed:
@@ -735,9 +746,9 @@ def main():
 
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
-    print("Планировщик запущен!")  # Проверка, что запустился
+    logger.info("Планировщик запущен!")  # Проверка, что запустился
 
-    print("🚀 Бот запущен!")
+    logger.info("🚀 Бот запущен!")
     updater.start_polling()
     updater.idle()
 

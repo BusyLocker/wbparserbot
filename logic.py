@@ -18,13 +18,20 @@ from typing import Optional
 import httpx
 import random
 
-# ─────────────────────────────────────────────────────────────
+
 # Supabase — куки берутся отсюда автоматически
-# ─────────────────────────────────────────────────────────────
 load_dotenv()
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
-# ─────────────────────────────────────────────────────────────
+Log_Level: str = os.environ.get(("Log_Level"))
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.wildberries.ru/__internal/u-card/cards/v4/detail"
 
@@ -57,7 +64,7 @@ def load_cookies_from_supabase() -> tuple[dict, dict]:
 def get_cookies() -> tuple[dict, dict]:
     global _cookies_cache, _headers_cache
     if not _cookies_cache:
-        print("🔄 Загружаю куки из Supabase...")
+        logger.info("🔄 Загружаю куки из Supabase...")
         _cookies_cache, _headers_cache = load_cookies_from_supabase()
     return _cookies_cache, _headers_cache
 
@@ -98,12 +105,12 @@ async def _fetch(client: httpx.AsyncClient, nm_id: int) -> dict:
 
                 if resp.status_code == 429:
                     wait = 15 * (attempt + 1)
-                    print(f"⏳ [{nm_id}] Лимит запросов, жду {wait} сек...")
+                    logger.warning(f"⏳ [{nm_id}] Лимит запросов, жду {wait} сек...")
                     await asyncio.sleep(wait)
                     continue
 
                 if resp.status_code in (403, 498):
-                    print(f"🔄 [{nm_id}] Токен невалиден, жду обновления куков...")
+                    logger.warning(f"🔄 [{nm_id}] Токен невалиден, жду обновления куков...")
                     invalidate_cookies_cache()
                     await asyncio.sleep(5 * (attempt + 1))  # 5, 10, 15 сек между попытками
                     cookies, extra_headers = get_cookies()
@@ -113,18 +120,18 @@ async def _fetch(client: httpx.AsyncClient, nm_id: int) -> dict:
                 return resp.json()
 
             except Exception as e:
-                print(f"⚠️ [{nm_id}] Попытка {attempt + 1}/3 не удалась: {e}")
+                logger.warning(f"⚠️ [{nm_id}] Попытка {attempt + 1}/3 не удалась: {e}")
                 if attempt < 2:
                     await asyncio.sleep(2)
 
-        print(f"❌ [{nm_id}] Все попытки исчерпаны, пропускаю")
+        logger.warning(f"❌ [{nm_id}] Все попытки исчерпаны, пропускаю")
         return {}
 
 
 def _print_result(data, nm_id: int, url: str):
     products = data.get("products", [])
     if not products:
-        print("❌ Товар не найден")
+        logger.warning("❌ Товар не найден")
         return
 
     p = products[0]
@@ -166,7 +173,7 @@ async def _run(urls, name_list, output_dict):
             now += 1
             nm_id = _extract_nm_id(url)
             if not nm_id:
-                print(f"❌ Не удалось распознать: {url}")
+                logger.warning(f"❌ Не удалось распознать: {url}")
                 all.append(now)
                 continue
             valid.append((url, nm_id))
@@ -179,8 +186,8 @@ async def _run(urls, name_list, output_dict):
 
         for (url, nm_id), result, name in zip(valid, results, name_list):
             if isinstance(result, Exception):
-                print(f"\n🔗 {url}")
-                print(f"❌ Ошибка: {result}")
+                logger.debug(f"\n🔗 {url}")
+                logger.error(f"❌ Ошибка: {result}")
             else:
                 output = _print_result(result, nm_id, url)
                 output_dict[name] = output
