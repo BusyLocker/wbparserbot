@@ -4,17 +4,21 @@ My first pet-project — a Telegram bot for monitoring prices on Wildberries mar
 
 ## Stack
 
-- Python 3.10+
+- Python 3.10
 - python-telegram-bot 13.15
 - httpx (async HTTP requests)
 - Supabase (PostgreSQL database)
 - Wildberries internal API
+- Integrated online cashier
+- Docker
 
 ## Files
 
-- `bot.py` — entry point, starts the bot and the hourly price-check scheduler
-- `logic.py` — parser logic, fetches prices from Wildberries API
-- `requirements.txt` — dependencies
+- `bot.py` - entry point, starts the bot and the hourly price-check scheduler
+- `logic.py` - parser logic, fetches prices from Wildberries API
+- `requirements.txt` - dependencies
+- 'Dockerfile' - Dockerfile, actually
+- 'Docker-compose.yml' - Compose file
 
 ## How it works
 
