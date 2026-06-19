@@ -18,7 +18,6 @@ from typing import Optional
 import httpx
 import random
 
-
 # Supabase — куки берутся отсюда автоматически
 load_dotenv()
 url: str = os.environ.get("SUPABASE_URL")
@@ -45,8 +44,6 @@ PARAMS_BASE = {
     "lang": "ru",
     "ab_testing": "false",
 }
-
-SEMAPHORE = asyncio.Semaphore(3)
 
 # Кэш куков в памяти — не дёргаем Supabase на каждый запрос
 _cookies_cache: dict = {}
@@ -80,8 +77,8 @@ def _extract_nm_id(url) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-async def _fetch(client: httpx.AsyncClient, nm_id: int) -> dict:
-    async with SEMAPHORE:
+async def _fetch(client: httpx.AsyncClient, nm_id: int, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
         cookies, extra_headers = get_cookies()
 
         params = {**PARAMS_BASE, "nm": str(nm_id)}
@@ -165,6 +162,7 @@ def _print_result(data, nm_id: int, url: str):
 
 
 async def _run(urls, name_list, output_dict):
+    semaphore = asyncio.Semaphore(3)  # создаём здесь — привязан к актуальному event loop
     async with httpx.AsyncClient() as client:
         tasks, valid = [], []
         now = -1
@@ -177,7 +175,7 @@ async def _run(urls, name_list, output_dict):
                 all.append(now)
                 continue
             valid.append((url, nm_id))
-            tasks.append(_fetch(client, nm_id))
+            tasks.append(_fetch(client, nm_id, semaphore))
 
         for a in all:
             del name_list[a]
