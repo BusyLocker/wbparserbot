@@ -17,8 +17,7 @@ import asyncio
 from typing import Optional
 import httpx
 import random
-
-# Supabase — куки берутся отсюда автоматически
+#for the cookies
 load_dotenv()
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
@@ -45,12 +44,13 @@ PARAMS_BASE = {
     "ab_testing": "false",
 }
 
-# Кэш куков в памяти — не дёргаем Supabase на каждый запрос
+# caching cookies
 _cookies_cache: dict = {}
 _headers_cache: dict = {}
 
 
 def load_cookies_from_supabase() -> tuple[dict, dict]:
+    #actually, loading cookies from supabase
     sb = create_client(url, key)
     result = sb.table("wb_cookies").select("cookies, headers").eq("id", 1).single().execute()
     cookies = result.data.get("cookies", {})
@@ -59,6 +59,7 @@ def load_cookies_from_supabase() -> tuple[dict, dict]:
 
 
 def get_cookies() -> tuple[dict, dict]:
+    #getting cookies from cache
     global _cookies_cache, _headers_cache
     if not _cookies_cache:
         logger.info("🔄 Загружаю куки из Supabase...")
@@ -67,17 +68,20 @@ def get_cookies() -> tuple[dict, dict]:
 
 
 def invalidate_cookies_cache():
+    #I think there is no need to describe that
     global _cookies_cache, _headers_cache
     _cookies_cache = {}
     _headers_cache = {}
 
 
 def _extract_nm_id(url) -> Optional[int]:
+    #extract nm_id of product
     match = re.search(r"/catalog/(\d+)/", url)
     return int(match.group(1)) if match else None
 
 
 async def _fetch(client: httpx.AsyncClient, nm_id: int, semaphore: asyncio.Semaphore) -> dict:
+    #go to the wildberries and parse
     async with semaphore:
         cookies, extra_headers = get_cookies()
 
@@ -109,7 +113,7 @@ async def _fetch(client: httpx.AsyncClient, nm_id: int, semaphore: asyncio.Semap
                 if resp.status_code in (403, 498):
                     logger.warning(f"🔄 [{nm_id}] Токен невалиден, жду обновления куков...")
                     invalidate_cookies_cache()
-                    await asyncio.sleep(5 * (attempt + 1))  # 5, 10, 15 сек между попытками
+                    await asyncio.sleep(5 * (attempt + 1))  # don't be banned, wait.
                     cookies, extra_headers = get_cookies()
                     continue
 
@@ -117,7 +121,7 @@ async def _fetch(client: httpx.AsyncClient, nm_id: int, semaphore: asyncio.Semap
                 return resp.json()
 
             except Exception as e:
-                logger.warning(f"⚠️ [{nm_id}] Попытка {attempt + 1}/3 не удалась: {e}")
+                logger.warning(f"⚠️ [{nm_id}] Попытка {attempt + 1}/3 не удалась: {type(e).__name__}: {e}")
                 if attempt < 2:
                     await asyncio.sleep(2)
 
@@ -126,6 +130,7 @@ async def _fetch(client: httpx.AsyncClient, nm_id: int, semaphore: asyncio.Semap
 
 
 def _print_result(data, nm_id: int, url: str):
+    #return result of parse
     products = data.get("products", [])
     if not products:
         logger.warning("❌ Товар не найден")
@@ -162,7 +167,7 @@ def _print_result(data, nm_id: int, url: str):
 
 
 async def _run(urls, name_list, output_dict):
-    semaphore = asyncio.Semaphore(3)  # создаём здесь — привязан к актуальному event loop
+    semaphore = asyncio.Semaphore(3)  # don't be banned x2
     async with httpx.AsyncClient() as client:
         tasks, valid = [], []
         now = -1
@@ -193,6 +198,7 @@ async def _run(urls, name_list, output_dict):
 
 
 def get_prices(url_list, name_list):
+    #request to parse
     output_dict = {}
     asyncio.run(_run(url_list, name_list, output_dict))
     return output_dict

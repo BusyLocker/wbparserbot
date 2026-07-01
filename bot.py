@@ -24,6 +24,7 @@ Token: str = os.environ.get("Token")
 Provider_Token: str = os.environ.get("Provider_Token")
 Log_Level: str = os.environ.get(("Log_Level"))
 supabase: Client = create_client(url, key)
+wbauid: str = os.environ.get("wbauid")
 
 logging.basicConfig(
     level=Log_Level,
@@ -53,15 +54,16 @@ TARIFF_NAMES = {
 }
 
 
+
 def run_scheduler():
-    """Запускает проверку цен по расписанию"""
+    #it's a scheduler, which staring every hour to parse the products and notify users
     while True:
         current_hour = datetime.now(pytz.timezone('Europe/Moscow')).hour
-        target_hour = current_hour + 1  # так как у тебя часы 1-24
+        target_hour = current_hour + 1  # because hours are from 1 to 24
 
         logger.info(f"[{datetime.now()}] Проверка для часа: {target_hour}")
 
-        # Получаем ВСЕХ пользователей
+        # recieve data of all users
         users = supabase.table('items') \
             .select('id, timeofdelivery') \
             .execute()
@@ -81,25 +83,23 @@ def run_scheduler():
 
         logger.info(f"Найдено: {len(users_to_check)} пользователей")
 
-        # Запускаем проверку
+        # Start checking
         for user in users_to_check:
             thread = threading.Thread(target=check_and_notify, args=(user['id'],))
             thread.start()
 
-        # Ждём час
+        # waiting one hour
         sleep(3600)
 
 
 def check_and_notify(user_id):
-    """
-    Проверяет цены для пользователя и отправляет уведомление
-    """
-    # Проверяем тариф
+    #checking prices and, after all, notifying all users in telegram.
+    # checking tariff
     if is_tariff_expired(user_id):
         return
     urls = []
     names = []
-    # Получаем товары пользователя
+    # receiving users urls from db
     result = supabase.table('url_list') \
         .select('name, url') \
         .eq('id', user_id) \
@@ -112,8 +112,10 @@ def check_and_notify(user_id):
         urls.append(item["url"])
         names.append(item["name"])
 
-    # Парсим цены
+    # parsing
     final_dict = get_prices(urls,names)
+
+    #preparing a message
     message00 = "📋 Результаты проверки цен:\n" + "=" * 30 + "\n"
     for i, (name, priceorsize) in enumerate(final_dict.items(), 1):
         message00 += f"{i}. 📦 {name}\n"
@@ -124,15 +126,16 @@ def check_and_notify(user_id):
             message00 += f" Размерные линейки {priceorsize[1]}\n"
         message00 += "-" * 30 + "\n"
 
-    # Отправляем уведомление
+    # sending notification
     try:
         bot.send_message(chat_id=user_id, text=message00)
-        logger.debug(f"Уведомление отправлено пользователю {user_id}")
+        logger.info(f"Уведомление отправлено пользователю {user_id}")
     except Exception as e:
         logger.error(f"Ошибка отправки {user_id}: {e}")
 
 
 def del_list(update: Update,context: CallbackContext):
+    #there we are checking products>0 and moving a step
     user_id = update.effective_user.id
     result = supabase.table('url_list') \
         .select('name, url') \
@@ -147,13 +150,14 @@ def del_list(update: Update,context: CallbackContext):
 
 
 def give_list(update: Update):
+    #func for output the list of urls
     user_id = update.effective_user.id
     result = supabase.table('url_list') \
         .select('name, url') \
         .eq('id', user_id) \
         .execute()
 
-    # Создаём message заранее
+    # preparing message
     message = "📋 Ваши товары:\n" + "=" * 30 + "\n"
 
     if not result.data:
@@ -168,6 +172,7 @@ def give_list(update: Update):
     update.message.reply_text(message)
 
 def is_not_unique(column, value, update: Update):
+    #if we want to users don't be confused by same names of urls when they about to delete one of them, we are checking that by this func
     result = supabase.table("url_list") \
         .select(column) \
         .eq('id', update.effective_user.id) \
@@ -176,6 +181,7 @@ def is_not_unique(column, value, update: Update):
     return len(result.data) > 0
 
 def can_add_url(update: Update):
+    #check can users add urls or that forbidden by limit of they tariff, or they just don't own one
     user_id = update.effective_user.id
     result = supabase.table('url_list').select('id').eq('id', user_id).execute()
     products_count = len(result.data)
@@ -216,6 +222,7 @@ def can_add_url(update: Update):
 
 
 def user_exists(idi):
+    #checking existing of user
     try:
         result = supabase.table('users').select('id').eq('id', idi).execute()
         return len(result.data) > 0
@@ -223,6 +230,7 @@ def user_exists(idi):
         return False
 
 def user_iscool(idi):
+    #checking: we should put user in main menu or to the start
     try:
         result = supabase.table('items').select('timeofdelivery').eq('id', idi).execute()
         return len(result.data) > 0
@@ -231,7 +239,7 @@ def user_iscool(idi):
 
 
 def is_tariff_expired(idi):
-    """Возвращает True, если тариф истёк"""
+    #check exp. date of users tariff
     result = supabase.table('users') \
         .select('ended_at') \
         .eq('id', idi) \
@@ -243,10 +251,10 @@ def is_tariff_expired(idi):
     ended_at = result.data[0]['ended_at']
     ended_date = datetime.fromisoformat(ended_at).date()
 
-    # Текущая дата в Москве
+    # time in Moscow
     now_date = datetime.now(pytz.timezone('Europe/Moscow')).date()
 
-    # Дата через 30 дней после окончания
+    # if user inactive for 30 days, we delete all of his urls from db
     check_date = ended_date + timedelta(days=30)
     if now_date > check_date:
         supabase.table('url_list').delete().eq('user_id', idi).execute()
@@ -254,6 +262,7 @@ def is_tariff_expired(idi):
     return datetime.now(pytz.timezone('Europe/Moscow')).date() > ended_date
 
 def test_connection():
+    #testing connection to the supabase
     try:
         result = supabase.table('users').select('*').limit(1).execute()
         logger.info("✅ Supabase подключён!")
@@ -263,6 +272,8 @@ def test_connection():
         return False
 
 test_connection()
+
+#below - keyboard block
 
 def starting_keyboard():
     return ReplyKeyboardMarkup([
@@ -288,12 +299,15 @@ def tariff_keyboard():
         [InlineKeyboardButton("🚀Эконом", callback_data="econom")],
         [InlineKeyboardButton("💼Стандарт", callback_data="standart")],
         [InlineKeyboardButton("🏆Про", callback_data="pro")],
-        [InlineKeyboardButton("У меня уже есть тариф.", callback_data="trial")],
+        [InlineKeyboardButton("У меня уже есть тариф или пробный.", callback_data="trial")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
+#above - keyboard block
+
 
 def update_token(update: Update, context: CallbackContext):
+    #we should update cookies every ~12 hours
     user_id = update.effective_user.id
     if user_id != YOUR_ADMIN_ID:
         return
@@ -305,7 +319,7 @@ def update_token(update: Update, context: CallbackContext):
     token = context.args[0]
     sb = create_client(url, key)
     sb.table("wb_cookies").update({
-        "cookies": {"x_wbaas_token": token, "_wbauid": "8652721901780603036"},
+        "cookies": {"x_wbaas_token": token, "_wbauid": wbauid},
         "updated_at": datetime.utcnow().isoformat(),
     }).eq("id", 1).execute()
 
@@ -313,6 +327,7 @@ def update_token(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Токен обновлён!")
 
 def start(update: Update, context: CallbackContext):
+    #doing after /start
     if user_exists(update.effective_user.id):
         if user_iscool(update.effective_user.id):
             context.user_data["step"] = "main_menu"
@@ -326,8 +341,8 @@ def start(update: Update, context: CallbackContext):
             )
         else:
             update.message.reply_text(
-                "🎯 Бот для ценового мониторинга Яндекс Маркета\n"
-                "Выберите тариф, отправьте ссылку на товар, и я начну следить за ценой!",
+                "🎯 Бот для ценового мониторинга Wildberries\n"
+            "Выберите тариф, отправьте ссылку на товар, и я начну следить за ценой!",
                 reply_markup=starting_keyboard()
             )
             context.user_data["step"] = "starting"
@@ -339,6 +354,7 @@ def start(update: Update, context: CallbackContext):
             reply_markup=starting_keyboard()
         )
 
+        #giving trial for user immediately
         supabase.table('users').insert({
             'id': update.effective_user.id,
             'tariff': 'trial',
@@ -349,8 +365,11 @@ def start(update: Update, context: CallbackContext):
         context.user_data["step"] = "starting"
 
 def button_handler(update: Update, context: CallbackContext):
+    #handle button press
     query = update.callback_query
     query.answer()
+
+    query.edit_message_reply_markup(reply_markup=None)
 
     tariff = query.data
 
@@ -358,7 +377,7 @@ def button_handler(update: Update, context: CallbackContext):
 
         if not is_tariff_expired(update.effective_user.id):
             query.message.reply_text(
-                "Перейдём к началу работы. Отправьте в какой час по Московскому часовому поясу вам будет удобно получать уведомления (от 1 до 24)",reply_markup=ReplyKeyboardRemove()
+                "Перейдём к началу работы. Отправьте в какой час по Московскому часовому поясу вам будет удобно получать уведомления (от 1 до 24). Если вам достаточно, отправьте слово\"Всё\"",reply_markup=ReplyKeyboardRemove()
             )
             context.user_data["step"] = "start_work"
         elif is_tariff_expired(update.effective_user.id):
@@ -378,6 +397,8 @@ def button_handler(update: Update, context: CallbackContext):
         send_invoice(update, context, tariff)
 
 def send_invoice(update: Update, context: CallbackContext, tariff: str):
+    #prepairing a payment
+
     query = update.callback_query
     title = f"Тариф {TARIFF_NAMES[tariff]}"
     description = f"Оплата тарифа {TARIFF_NAMES[tariff]}"
@@ -402,6 +423,8 @@ def pre_checkout_handler(update: Update, context: CallbackContext):
     query.answer(ok=True)
 
 def successful_payment_handler(update: Update, context: CallbackContext):
+    #after payment
+
     payment = update.message.successful_payment
     tariff = payment.invoice_payload
 
@@ -418,13 +441,18 @@ def successful_payment_handler(update: Update, context: CallbackContext):
     }).execute()
 
     update.message.reply_text(
-        "Перейдём к началу работы. Отправьте в какой час по Московскому часовому поясу вам будет удобно получать уведомления (от 1 до 24)",reply_markup=ReplyKeyboardRemove()
+        "Перейдём к началу работы. Отправьте в какой час по Московскому часовому поясу вам будет удобно получать уведомления (от 1 до 24). Если вам достаточно, отправьте слово\"Всё\"",reply_markup=ReplyKeyboardRemove()
     )
     context.user_data["step"] = "start_work"
 
 
 def handle_choice(update: Update, context: CallbackContext):
+    #bot structure
+
     current_step = context.user_data.get("step")
+
+    #by moving on steps we can show what the task for bot at the moment
+
     if current_step == "starting":
         choice = update.message.text
         if choice == "️ℹ️️️️Информацияℹ️":
@@ -479,20 +507,58 @@ def handle_choice(update: Update, context: CallbackContext):
 
 
     elif current_step == "start_work":
-        # Проверяем, сколько часов уже собрали
+        # checking how many hours we got
         if "collected_hours" not in context.user_data:
             context.user_data["collected_hours"] = []
 
-        # Получаем текущий ввод
+        # receiving user input
         try:
-            hour = int(update.message.text)
-            if not (1 <= hour <= 24):
+            hour = update.message.text
+
+            if hour.lower() == "всё":
+                hours = sorted(context.user_data["collected_hours"])
+                # saving to supabase
+                supabase.table('items').insert({
+                    'id': update.effective_user.id,
+                    'timeofdelivery': hours,
+                }).execute()
+
+                # preparing a message
+                hours_str = ', '.join([f"{h - 1}:00" for h in hours])
+                update.message.reply_text(
+                    f"✅ Спасибо! Настройки сохранены!\n"
+                    f"📦 Уведомления будут приходить в: {hours_str} (в течении этого(их) часа(ов))"
+                )
+
+                # deleting cached hours
+                try:
+                    del context.user_data["collected_hours"]
+                    context.user_data["step"] = "main_menu"
+                except:
+                    #I know, it's bad, but there are only ONE the most possibly error
+                    pass
+
+                # showing main menu
+
+                update.message.reply_text(
+                    "Совет: Если бот перестал работать, пропишите /start. Ваши данные останутся.",
+                    reply_markup=usual_keyboard()
+                )
+
+                update.message.reply_text(
+                    "Главное меню:",
+                    reply_markup=usual_keyboard()
+                )
+
+
+            if not (1 <= int(hour) <= 24):
                 raise ValueError
         except ValueError:
-            update.message.reply_text("❌ Введите час от 1 до 24")
+            update.message.reply_text("❌ Введите час от 1 до 24 или слово \"Всё\"")
             return
 
-        # Добавляем час в список
+
+        # adding hour in list
         context.user_data["collected_hours"].append(hour)
 
         result = supabase.table('users') \
@@ -501,7 +567,7 @@ def handle_choice(update: Update, context: CallbackContext):
             .execute()
         tariff = result.data[0].get("tariff")
 
-        # Сколько часов нужно собрать
+        # how many hours we need, based on users tariff
         hours_needed = {
             'trial': 1,
             'econom': 2,
@@ -511,7 +577,7 @@ def handle_choice(update: Update, context: CallbackContext):
 
         collected = len(context.user_data["collected_hours"])
 
-        # Если ещё не все часы собраны
+        # if we didn't receive needed amount of hours
         if collected < hours_needed:
             remaining = hours_needed - collected
             update.message.reply_text(
@@ -519,15 +585,15 @@ def handle_choice(update: Update, context: CallbackContext):
                 f"Осталось выбрать {remaining} час(ов)\n"
                 f"Введите следующий час (1-24):"
             )
-            return  # Ждём следующее сообщение
+            return  # waiting next message
 
-        # Все часы собраны - сохраняем
+        # all descriptions of these acts you can watch in above block
         hours = sorted(context.user_data["collected_hours"])
 
         # Сохраняем в Supabase
         supabase.table('items').insert({
             'id': update.effective_user.id,
-            'timeofdelivery': hours,  # Список часов [9, 14, 18]
+            'timeofdelivery': hours,
         }).execute()
 
         # Форматируем ответ
@@ -537,11 +603,8 @@ def handle_choice(update: Update, context: CallbackContext):
             f"📦 Уведомления будут приходить в: {hours_str} (в течении этого(их) часа(ов))"
         )
 
-        # Очищаем временные данные и меняем step
         del context.user_data["collected_hours"]
         context.user_data["step"] = "main_menu"
-
-        # Показываем главное меню
 
         update.message.reply_text(
             "Совет: Если бот перестал работать, пропишите /start. Ваши данные останутся.",
@@ -553,33 +616,7 @@ def handle_choice(update: Update, context: CallbackContext):
             reply_markup=usual_keyboard()
         )
 
-    elif current_step == "confirm_reset":
 
-        if update.message.text.lower() == "да":
-
-            supabase.table('items').delete().eq('id', update.effective_user.id).execute()
-
-            context.user_data["step"] = "starting"
-
-            update.message.reply_text(
-
-                "Возвращаю к началу...",
-
-                reply_markup=starting_keyboard()
-
-            )
-
-        else:
-
-            context.user_data["step"] = "main_menu"
-
-            update.message.reply_text(
-
-                "❌ Отменено. Возвращаю в главное меню.",
-
-                reply_markup=usual_keyboard()
-
-            )
 
     elif current_step == "main_menu":
 
@@ -594,7 +631,7 @@ def handle_choice(update: Update, context: CallbackContext):
 
                 )
 
-                # Меняем шаг, чтобы бот ждал подтверждения
+                # switching step, bot is awaiting confirmation
 
                 context.user_data["step"] = "confirm_reset"
             elif is_tariff_expired(update.effective_user.id):
@@ -644,8 +681,38 @@ def handle_choice(update: Update, context: CallbackContext):
                 )
                 context.user_data["step"] = "starting"
 
-# Шаг 1: Ждём ссылку
+    elif current_step == "confirm_reset":
+        #awaiting reset confirmation
+
+        if update.message.text.lower() == "да":
+
+            supabase.table('items').delete().eq('id', update.effective_user.id).execute()
+
+            context.user_data["step"] = "starting"
+
+            update.message.reply_text(
+
+                "Возвращаю к началу...",
+
+                reply_markup=starting_keyboard()
+
+            )
+
+        else:
+
+            context.user_data["step"] = "main_menu"
+
+            update.message.reply_text(
+
+                "❌ Отменено. Возвращаю в главное меню.",
+
+                reply_markup=usual_keyboard()
+
+            )
+
+
     elif current_step == "waiting_for_url":
+        #when user wants to add url, bot will wait for that
         url = update.message.text
 
         # Простая проверка, что это ссылка
@@ -662,18 +729,18 @@ def handle_choice(update: Update, context: CallbackContext):
             )
             return
 
-        # Сохраняем ссылку во временные данные
+        # caching
         context.user_data["pending_url"] = url
 
-        # Просим название
+        # moving to waiting for name
         update.message.reply_text(
             "✏️ Теперь отправьте название для этого товара:\n"
             "(например: iPhone 15 Pro или Кактус в горшке)"
         )
         context.user_data["step"] = "waiting_for_name"
 
-# Шаг 2: Ждём название и сохраняем
     elif current_step == "waiting_for_name":
+        #waiting for name, actually
         name = update.message.text
         if len(name)>100:
             update.message.reply_text(
@@ -681,7 +748,7 @@ def handle_choice(update: Update, context: CallbackContext):
                 "Отправьте более короткое имя."
             )
             return
-        # Проверка того, что имя уникально
+        # checking name for valid
         if is_not_unique("name", name,update) :
             update.message.reply_text(
                 "❌ Название товара не должно повторяться!\n"
@@ -691,7 +758,7 @@ def handle_choice(update: Update, context: CallbackContext):
 
         url = context.user_data.get("pending_url")
 
-        # ✅ Просто добавляем новую запись (не проверяя старые)
+        # just adding the url
         supabase.table('url_list').insert({
             'id': update.effective_user.id,
             'url': url,
@@ -703,6 +770,8 @@ def handle_choice(update: Update, context: CallbackContext):
 
         context.user_data["step"] = "main_menu"
 
+        #reply
+
         update.message.reply_text(
             f"✅ Товар добавлен!\n"
             f"📦 Всего товаров: {products_count}\n"
@@ -710,6 +779,7 @@ def handle_choice(update: Update, context: CallbackContext):
         )
 
     elif current_step == "waiting_for_del":
+        #when user wants to delete one of urls
         name = update.message.text
         user_id = update.effective_user.id
         result = supabase.table('url_list') \
@@ -730,12 +800,13 @@ def handle_choice(update: Update, context: CallbackContext):
         context.user_data["step"] = "main_menu"
 
 def main():
+    #launching the bot
     global bot
     updater = Updater(Token, use_context=True, request_kwargs={
-        'read_timeout': 60,      # Читать ответ
-        'connect_timeout': 60,   # Подключиться
+        'read_timeout': 60,      # reading replies
+        'connect_timeout': 60,   # connect
     })
-    bot = updater.bot  # 👈 Сохраняем бота
+    bot = updater.bot  # saving
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
@@ -744,11 +815,13 @@ def main():
     dp.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     dp.add_handler(MessageHandler(Filters.successful_payment, successful_payment_handler))
 
+    #making a thread for scheduler
+
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
-    logger.info("Планировщик запущен!")  # Проверка, что запустился
+    logger.info("Планировщик запущен!")  # checking launching of scheduler
 
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот запущен!") #cheacking launching of bot
     updater.start_polling()
     updater.idle()
 
